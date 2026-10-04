@@ -137,7 +137,7 @@ public class DocumentViewerActivity extends Activity {
     }
 
     private void share() {
-        Uri uri = Uri.parse("content://ru.amafor.offlinedocs.files/" + Uri.encode(stored));
+        Uri uri = Uri.parse("content://" + getPackageName() + ".files/" + Uri.encode(stored));
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType(mime == null || mime.length() == 0 ? "application/octet-stream" : mime);
         i.putExtra(Intent.EXTRA_STREAM, uri);
