@@ -537,13 +537,76 @@ public class MainActivity extends Activity {
     }
 
     private void docMenu(JSONObject d) {
-        String[] items = {"Открыть", "Поделиться", "Переименовать", "Удалить"};
+        String[] items = {"Открыть", "Поделиться", "Переместить", "Переименовать", "Удалить"};
         new AlertDialog.Builder(this).setTitle(d.optString("title")).setItems(items, (x, w) -> {
             if (w == 0) openDoc(d);
             else if (w == 1) shareDoc(d);
-            else if (w == 2) renameDoc(d);
+            else if (w == 2) moveDoc(d);
+            else if (w == 3) renameDoc(d);
             else deleteDoc(d);
         }).show();
+    }
+
+    private void moveDoc(JSONObject d) {
+        String[] sections = {"Факсограммы", "Инструкции", "Приказы и распоряжения"};
+        String[] values = {SEC_FAX, SEC_INS, SEC_ORD};
+
+        new AlertDialog.Builder(this)
+            .setTitle("Переместить в раздел")
+            .setItems(sections, (dialog, which) -> chooseMoveFolder(d, values[which]))
+            .setNegativeButton("Отмена", null)
+            .show();
+    }
+
+    private void chooseMoveFolder(JSONObject d, String section) {
+        JSONArray fs = folders();
+        ArrayList<String> names = new ArrayList<>();
+        ArrayList<String> ids = new ArrayList<>();
+
+        names.add("Без папки");
+        ids.add(null);
+
+        for (int i=0; i<fs.length(); i++) {
+            JSONObject f = fs.optJSONObject(i);
+            if (section.equals(folderSection(f))) {
+                names.add(f.optString("name"));
+                ids.add(f.optString("id"));
+            }
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle(sectionName(section) + ": выберите папку")
+            .setItems(names.toArray(new String[0]), (dialog, which) -> {
+                moveDocTo(d.optString("id"), section, ids.get(which));
+            })
+            .setNegativeButton("Отмена", null)
+            .show();
+    }
+
+    private void moveDocTo(String docId, String section, String folderId) {
+        JSONArray a = docs();
+        String title = "Документ";
+
+        for (int i=0; i<a.length(); i++) {
+            JSONObject d = a.optJSONObject(i);
+            if (docId.equals(d.optString("id"))) {
+                title = d.optString("title", "Документ");
+                try {
+                    d.put("section", section);
+                    if (folderId == null) d.put("folderId", JSONObject.NULL);
+                    else d.put("folderId", folderId);
+                } catch(Exception ignored) {}
+                break;
+            }
+        }
+
+        saveArray("docs", a);
+
+        String place = sectionName(section);
+        String fn = folderName(folderId);
+        if (fn != null) place += " / " + fn;
+        Toast.makeText(this, title + " → " + place, Toast.LENGTH_SHORT).show();
+        refreshCurrent();
     }
 
     private void renameDoc(JSONObject d) {
