@@ -5,10 +5,10 @@ android {
   compileSdk 35
 
   defaultConfig {
-    applicationId 'ru.amafor.offlinedocs'
+    applicationId 'ru.amafor.offlinedocs.stable'
     minSdk 24
     targetSdk 35
-    versionCode 4
-    versionName '1.1.0'
+    versionCode 5
+    versionName '1.1.1'
   }
 }
