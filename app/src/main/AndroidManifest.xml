@@ -5,6 +5,11 @@
       android:theme="@android:style/Theme.Material.Light.NoActionBar"
       android:supportsRtl="true">
     <activity
+        android:name=".DocumentViewerActivity"
+        android:screenOrientation="unspecified"
+        android:configChanges="keyboardHidden|orientation|screenSize"
+        android:exported="false"/>
+    <activity
         android:name=".MainActivity"
         android:screenOrientation="unspecified"
         android:exported="true">
