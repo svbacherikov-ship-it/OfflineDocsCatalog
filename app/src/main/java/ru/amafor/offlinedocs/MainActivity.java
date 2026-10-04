@@ -514,7 +514,7 @@ public class MainActivity extends Activity {
         }
 
         try {
-            Uri uri = Uri.parse("content://ru.amafor.offlinedocs.files/" + Uri.encode(d.optString("stored")));
+            Uri uri = Uri.parse("content://" + getPackageName() + ".files/" + Uri.encode(d.optString("stored")));
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(uri, mime);
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -528,7 +528,7 @@ public class MainActivity extends Activity {
     }
 
     private void shareDoc(JSONObject d) {
-        Uri uri = Uri.parse("content://ru.amafor.offlinedocs.files/" + Uri.encode(d.optString("stored")));
+        Uri uri = Uri.parse("content://" + getPackageName() + ".files/" + Uri.encode(d.optString("stored")));
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType(d.optString("mime", mimeFromName(d.optString("title"))));
         i.putExtra(Intent.EXTRA_STREAM, uri);
