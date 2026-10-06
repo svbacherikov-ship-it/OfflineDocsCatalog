@@ -427,7 +427,7 @@ public class MainActivity extends Activity {
         for (int i=0; i<ds.length(); i++) {
             JSONObject d = ds.optJSONObject(i);
             String fn = folderName(d.isNull("folderId") ? null : d.optString("folderId"));
-            String hay = (d.optString("title") + " " + sectionName(d.optString("section")) + " " + (fn == null ? "" : fn)).toLowerCase(Locale.ROOT);
+            String hay = (d.optString("title") + " " + sectionName(d.optString("section")) + " " + (fn == null ? "" : fn) + " " + d.optString("note", "")).toLowerCase(Locale.ROOT);
             if (needle.length() == 0 || hay.contains(needle)) {
                 body.addView(docCard(d, true));
                 found++;
