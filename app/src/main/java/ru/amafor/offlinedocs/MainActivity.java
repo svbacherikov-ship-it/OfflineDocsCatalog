@@ -26,6 +26,7 @@ public class MainActivity extends Activity {
     private static final String SEC_FAX = "fax";
     private static final String SEC_INS = "instructions";
     private static final String SEC_ORD = "orders";
+    private static final String SEC_FORMS = "forms";
 
     private LinearLayout root;
     private String mode = "home";
@@ -170,6 +171,7 @@ public class MainActivity extends Activity {
         body.addView(sectionCard("ФАКС", "Факсограммы", "Оперативные документы и сообщения", SEC_FAX));
         body.addView(sectionCard("ИНС", "Инструкции", "Руководства, памятки и инструкции", SEC_INS));
         body.addView(sectionCard("ПР", "Приказы и распоряжения", "Приказы, распоряжения и организационные документы", SEC_ORD));
+        body.addView(sectionCard("БЛ", "Бланки", "Формы, шаблоны и рабочие бланки", SEC_FORMS));
 
         TextView note = new TextView(this);
         note.setText("Импортированные файлы копируются во внутреннюю память приложения и остаются доступными офлайн.");
@@ -349,6 +351,17 @@ public class MainActivity extends Activity {
         TextView title = label(d.optString("title"), 16, text(), true);
         title.setMaxLines(2);
         tx.addView(title);
+
+        String noteText = d.optString("note", "").trim();
+        if (noteText.length() > 0) {
+            String preview = noteText.replace("\n", " ").replace("\r", " ");
+            if (preview.length() > 80) preview = preview.substring(0, 80) + "…";
+            TextView note = label("✎ " + preview, 12, accent(), false);
+            note.setMaxLines(2);
+            note.setPadding(0, dp(3), 0, 0);
+            tx.addView(note);
+        }
+
         if (showLocation) {
             String loc = sectionName(d.optString("section"));
             String fn = folderName(d.isNull("folderId") ? null : d.optString("folderId"));
@@ -537,19 +550,63 @@ public class MainActivity extends Activity {
     }
 
     private void docMenu(JSONObject d) {
-        String[] items = {"Открыть", "Поделиться", "Переместить", "Переименовать", "Удалить"};
+        String[] items = {"Открыть", "Поделиться", "Заметка", "Переместить", "Переименовать", "Удалить"};
         new AlertDialog.Builder(this).setTitle(d.optString("title")).setItems(items, (x, w) -> {
             if (w == 0) openDoc(d);
             else if (w == 1) shareDoc(d);
-            else if (w == 2) moveDoc(d);
-            else if (w == 3) renameDoc(d);
+            else if (w == 2) editNote(d);
+            else if (w == 3) moveDoc(d);
+            else if (w == 4) renameDoc(d);
             else deleteDoc(d);
         }).show();
     }
 
+    private void editNote(JSONObject d) {
+        EditText e = new EditText(this);
+        e.setText(d.optString("note", ""));
+        e.setHint("Введите заметку к документу");
+        e.setMinLines(6);
+        e.setMaxLines(12);
+        e.setGravity(Gravity.TOP | Gravity.START);
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        int pad = dp(18);
+        e.setPadding(pad, dp(10), pad, dp(10));
+
+        ScrollView wrap = new ScrollView(this);
+        wrap.setFillViewport(true);
+        wrap.addView(e, new ScrollView.LayoutParams(-1, -2));
+
+        new AlertDialog.Builder(this)
+            .setTitle("Заметка: " + d.optString("title"))
+            .setView(wrap)
+            .setPositiveButton("Сохранить", (dialog, which) -> {
+                saveDocNote(d.optString("id"), e.getText().toString());
+                refreshCurrent();
+            })
+            .setNeutralButton("Очистить", (dialog, which) -> {
+                saveDocNote(d.optString("id"), "");
+                refreshCurrent();
+            })
+            .setNegativeButton("Отмена", null)
+            .show();
+    }
+
+    private void saveDocNote(String docId, String note) {
+        JSONArray a = docs();
+        for (int i=0; i<a.length(); i++) {
+            JSONObject item = a.optJSONObject(i);
+            if (docId.equals(item.optString("id"))) {
+                try { item.put("note", note == null ? "" : note.trim()); }
+                catch(Exception ignored) {}
+                break;
+            }
+        }
+        saveArray("docs", a);
+    }
+
     private void moveDoc(JSONObject d) {
-        String[] sections = {"Факсограммы", "Инструкции", "Приказы и распоряжения"};
-        String[] values = {SEC_FAX, SEC_INS, SEC_ORD};
+        String[] sections = {"Факсограммы", "Инструкции", "Приказы и распоряжения", "Бланки"};
+        String[] values = {SEC_FAX, SEC_INS, SEC_ORD, SEC_FORMS};
 
         new AlertDialog.Builder(this)
             .setTitle("Переместить в раздел")
@@ -776,6 +833,7 @@ public class MainActivity extends Activity {
     private String sectionName(String s) {
         if (SEC_FAX.equals(s)) return "Факсограммы";
         if (SEC_ORD.equals(s)) return "Приказы и распоряжения";
+        if (SEC_FORMS.equals(s)) return "Бланки";
         return "Инструкции";
     }
 
