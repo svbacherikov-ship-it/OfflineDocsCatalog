@@ -1,0 +1,254 @@
+name: PEM iOS Cloud Build
+
+on:
+  push:
+    branches: ["codex/ios-cloud-build-20261024"]
+    paths: [".github/workflows/ios-cloud-build.yml"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Environment check, unsigned build, or signed IPA"
+        required: true
+        default: environment
+        type: choice
+        options: [environment, unsigned, signed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pem-ios-cloud-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS and Xcode
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      BUILD_MODE: ${{ inputs.mode || 'environment' }}
+      SOURCE_URL: ${{ secrets.IOS_SOURCE_ZIP_URL }}
+      SOURCE_SHA256: ${{ vars.IOS_SOURCE_SHA256 }}
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.IOS_APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.IOS_APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROFILE_BASE64: ${{ secrets.IOS_APPLE_PROFILE_BASE64 }}
+      APP_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+    steps:
+      - name: Inspect cloud macOS and Xcode
+        id: environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ios-cloud-report"
+          sw_vers | tee "$RUNNER_TEMP/ios-cloud-report/macos.txt"
+          xcodebuild -version | tee "$RUNNER_TEMP/ios-cloud-report/xcode.txt"
+          xcodebuild -showsdks > "$RUNNER_TEMP/ios-cloud-report/sdks.txt"
+          xcrun swiftc --version > "$RUNNER_TEMP/ios-cloud-report/swift.txt"
+          xcrun simctl list runtimes -j > "$RUNNER_TEMP/ios-cloud-report/simulator-runtimes.json"
+          test -n "$(xcrun --find codesign)"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "ios-cloud-report"
+          report = {
+              "status": "environment_ready",
+              "macOS": (root / "macos.txt").read_text().strip(),
+              "xcode": (root / "xcode.txt").read_text().strip(),
+              "architecture": subprocess.check_output(["uname", "-m"], text=True).strip(),
+              "source_configured": bool(os.environ.get("SOURCE_URL") and os.environ.get("SOURCE_SHA256")),
+              "apple_certificate_configured": bool(os.environ.get("APPLE_CERTIFICATE_BASE64")),
+              "apple_profile_configured": bool(os.environ.get("APPLE_PROFILE_BASE64")),
+              "application_built": False,
+              "application_signed": False,
+              "application_installed": False,
+          }
+          (root / "environment.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("## Cloud macOS is ready\n\n")
+              summary.write(report["macOS"] + "\n\n" + report["xcode"] + "\n\n")
+              summary.write("Architecture: " + report["architecture"] + "\n\n")
+              summary.write("This environment check does not build or sign an application.\n")
+          PY
+
+      - name: Require private repository for application files
+        if: env.BUILD_MODE != 'environment'
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REPOSITORY_PRIVATE" != "true" ]]; then
+            echo "::error::Use a private repository before transferring application documents or producing application artifacts."
+            exit 1
+          fi
+          if [[ -z "$SOURCE_URL" || -z "$SOURCE_SHA256" ]]; then
+            echo "::error::Set IOS_SOURCE_ZIP_URL in repository secrets and IOS_SOURCE_SHA256 in repository variables."
+            exit 1
+          fi
+          if [[ "$BUILD_MODE" == "signed" && ( -z "$APPLE_CERTIFICATE_BASE64" || -z "$APPLE_PROFILE_BASE64" || -z "$APP_BUNDLE_ID" ) ]]; then
+            echo "::error::Apple certificate, provisioning profile and IOS_BUNDLE_ID are required for a signed IPA."
+            exit 1
+          fi
+
+      - name: Download and verify private source archive
+        if: env.BUILD_MODE != 'environment'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib, stat, sys, urllib.parse, urllib.request, zipfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "ios-source"
+          root.mkdir()
+          archive = root / "source.zip"
+          source = os.environ["SOURCE_URL"]
+          if urllib.parse.urlsplit(source).scheme != "https":
+              sys.exit("The source URL must use HTTPS.")
+          try:
+              with urllib.request.urlopen(source, timeout=120) as response, archive.open("wb") as target:
+                  while block := response.read(1024 * 1024):
+                      target.write(block)
+          except Exception:
+              sys.exit("Source download failed. Check the private source link and its expiry.")
+          digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
+          if digest != os.environ["SOURCE_SHA256"].strip().lower():
+              sys.exit("Source archive SHA256 mismatch.")
+          with zipfile.ZipFile(archive) as package:
+              for item in package.infolist():
+                  destination = (root / item.filename).resolve()
+                  if not destination.is_relative_to(root) or stat.S_ISLNK(item.external_attr >> 16):
+                      sys.exit("Unsafe source archive entry.")
+              package.extractall(root)
+          projects = list(root.rglob("Schemes.xcodeproj"))
+          if len(projects) != 1:
+              sys.exit("Expected exactly one Schemes.xcodeproj.")
+          project_root = projects[0].parent
+          if len(list((project_root / "Schemes/Content").rglob("*.pdf"))) != 77:
+              sys.exit("The complete 77-PDF library is required.")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("IOS_PROJECT_ROOT=" + str(project_root) + "\n")
+          PY
+
+      - name: Build unsigned iOS application
+        if: env.BUILD_MODE == 'unsigned'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$IOS_PROJECT_ROOT"
+          xcodebuild build -project Schemes.xcodeproj -scheme Schemes \
+            -configuration Release -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived" CODE_SIGNING_ALLOWED=NO \
+            > "$RUNNER_TEMP/ios-cloud-report/unsigned-build.log" 2>&1
+          test -x "$RUNNER_TEMP/ios-derived/Build/Products/Release-iphoneos/Schemes.app/Schemes"
+
+      - name: Install Apple signing identity and profile
+        if: env.BUILD_MODE == 'signed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGNING_KEYCHAIN="$RUNNER_TEMP/pem-ios-signing.keychain-db"
+          SIGNING_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$SIGNING_PASSWORD"
+          echo "IOS_SIGNING_KEYCHAIN=$SIGNING_KEYCHAIN" >> "$GITHUB_ENV"
+          echo "IOS_KEYCHAIN_PASSWORD=$SIGNING_PASSWORD" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import base64, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          for variable, name in [("APPLE_CERTIFICATE_BASE64", "apple-certificate.p12"), ("APPLE_PROFILE_BASE64", "apple-profile.mobileprovision")]:
+              file = root / name
+              file.write_bytes(base64.b64decode(os.environ[variable], validate=True))
+              file.chmod(0o600)
+          PY
+          security create-keychain -p "$SIGNING_PASSWORD" "$SIGNING_KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$SIGNING_KEYCHAIN"
+          security unlock-keychain -p "$SIGNING_PASSWORD" "$SIGNING_KEYCHAIN"
+          security import "$RUNNER_TEMP/apple-certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -t cert -f pkcs12 -k "$SIGNING_KEYCHAIN" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -k "$SIGNING_PASSWORD" "$SIGNING_KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$SIGNING_KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          security cms -D -i "$RUNNER_TEMP/apple-profile.mobileprovision" > "$RUNNER_TEMP/apple-profile.plist"
+          python3 - <<'PY'
+          import datetime, fnmatch, os, pathlib, plistlib, shutil, sys
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          profile = plistlib.loads((root / "apple-profile.plist").read_bytes())
+          now = datetime.datetime.now(datetime.timezone.utc)
+          expiry = profile["ExpirationDate"].replace(tzinfo=datetime.timezone.utc)
+          if expiry <= now:
+              sys.exit("The Apple provisioning profile has expired.")
+          team = profile["TeamIdentifier"][0]
+          application = profile["Entitlements"]["application-identifier"]
+          requested = team + "." + os.environ["APP_BUNDLE_ID"]
+          if not fnmatch.fnmatchcase(requested, application):
+              sys.exit("The provisioning profile does not match IOS_BUNDLE_ID.")
+          profile_name = profile["Name"]
+          if any("\n" in value or "\r" in value for value in [profile_name, team]):
+              sys.exit("Invalid provisioning metadata.")
+          destination = pathlib.Path.home() / "Library/MobileDevice/Provisioning Profiles" / (profile["UUID"] + ".mobileprovision")
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copyfile(root / "apple-profile.mobileprovision", destination)
+          method = "enterprise" if profile.get("ProvisionsAllDevices") else (
+              "debugging" if profile["Entitlements"].get("get-task-allow") else
+              "release-testing" if profile.get("ProvisionedDevices") else "app-store-connect")
+          identity = "Apple Development" if method == "debugging" else "Apple Distribution"
+          options = {
+              "method": method, "teamID": team, "signingStyle": "manual",
+              "signingCertificate": identity,
+              "provisioningProfiles": {os.environ["APP_BUNDLE_ID"]: profile_name},
+          }
+          (root / "ExportOptions.plist").write_bytes(plistlib.dumps(options))
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("IOS_TEAM_ID=" + team + "\n")
+              env.write("IOS_PROFILE_NAME=" + profile_name + "\n")
+              env.write("IOS_PROFILE_UUID=" + profile["UUID"] + "\n")
+              env.write("IOS_SIGNING_IDENTITY=" + identity + "\n")
+          PY
+
+      - name: Archive, export and verify signed IPA
+        if: env.BUILD_MODE == 'signed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$IOS_PROJECT_ROOT"
+          xcodebuild archive -project Schemes.xcodeproj -scheme Schemes -configuration Release \
+            -destination "generic/platform=iOS" -archivePath "$RUNNER_TEMP/Schemes.xcarchive" \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$IOS_SIGNING_IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $IOS_SIGNING_KEYCHAIN" \
+            > "$RUNNER_TEMP/ios-cloud-report/archive.log" 2>&1
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Schemes.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ios-export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            > "$RUNNER_TEMP/ios-cloud-report/export.log" 2>&1
+          codesign --verify --deep --strict "$RUNNER_TEMP/Schemes.xcarchive/Products/Applications/Schemes.app"
+          test -f "$RUNNER_TEMP/ios-export/Schemes.ipa"
+          unzip -t "$RUNNER_TEMP/ios-export/Schemes.ipa" > "$RUNNER_TEMP/ios-cloud-report/ipa-integrity.txt"
+
+      - name: Save cloud environment report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PEM-iOS-cloud-environment
+          path: ${{ runner.temp }}/ios-cloud-report
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Save private iOS build
+        if: success() && env.BUILD_MODE != 'environment' && github.event.repository.private
+        uses: actions/upload-artifact@v4
+        with:
+          name: PEM-Schemes-iOS-${{ env.BUILD_MODE }}
+          path: |
+            ${{ runner.temp }}/ios-export/*.ipa
+            ${{ runner.temp }}/ios-derived/Build/Products/Release-iphoneos/Schemes.app
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary signing material
+        if: always() && env.BUILD_MODE == 'signed'
+        shell: bash
+        run: |
+          if [[ -n "${IOS_SIGNING_KEYCHAIN:-}" ]]; then security delete-keychain "$IOS_SIGNING_KEYCHAIN" || true; fi
+          rm -f "$RUNNER_TEMP/apple-certificate.p12" "$RUNNER_TEMP/apple-profile.mobileprovision" \
+            "$RUNNER_TEMP/apple-profile.plist" "$RUNNER_TEMP/ExportOptions.plist"
+          if [[ -n "${IOS_PROFILE_UUID:-}" ]]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi
