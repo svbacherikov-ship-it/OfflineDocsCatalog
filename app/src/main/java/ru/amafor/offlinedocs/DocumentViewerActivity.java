@@ -461,8 +461,8 @@ public class DocumentViewerActivity extends Activity {
 
             PageAdapter(Context context) {
                 this.context = context;
-                int maxKb = (int)Math.min(48 * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L);
-                cache = new LruCache<Integer, Bitmap>(Math.max(8 * 1024, maxKb)) {
+                int maxKb = (int)Math.min(24 * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 12L);
+                cache = new LruCache<Integer, Bitmap>(Math.max(6 * 1024, maxKb)) {
                     @Override protected int sizeOf(Integer key, Bitmap value) {
                         return value == null ? 0 : value.getByteCount() / 1024;
                     }
@@ -506,7 +506,7 @@ public class DocumentViewerActivity extends Activity {
                         targetW = Math.max(1, Math.round(targetW * k));
                         targetH = 3200;
                     }
-                    Bitmap b = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565);
+                    Bitmap b = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
                     b.eraseColor(Color.WHITE);
                     page.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
                     return b;
