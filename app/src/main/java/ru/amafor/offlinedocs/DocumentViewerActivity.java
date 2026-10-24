@@ -8,6 +8,7 @@ import android.graphics.*;
 import android.graphics.pdf.PdfRenderer;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.util.LruCache;
 import android.view.*;
 import android.widget.*;
 
@@ -22,6 +23,7 @@ public class DocumentViewerActivity extends Activity {
     private String mime;
     private TextView pageLabel;
     private View contentView;
+    private boolean pdfContinuous;
 
     public static boolean supports(String title, String mime) {
         String n = title == null ? "" : title.toLowerCase(Locale.ROOT);
@@ -42,6 +44,7 @@ public class DocumentViewerActivity extends Activity {
             finish();
             return;
         }
+        pdfContinuous = getSharedPreferences("viewer", MODE_PRIVATE).getBoolean("pdf_continuous", true);
         buildViewer(state == null ? 0 : state.getInt("page", 0));
         immersive();
     }
@@ -53,12 +56,22 @@ public class DocumentViewerActivity extends Activity {
         String n = title == null ? "" : title.toLowerCase(Locale.ROOT);
         String m = mime == null ? "" : mime.toLowerCase(Locale.ROOT);
 
-        if (m.equals("application/pdf") || n.endsWith(".pdf")) {
-            PdfZoomView pdf = new PdfZoomView(this, file, startPage, (page, total) -> {
-                if (pageLabel != null) pageLabel.setText((page + 1) + " / " + total);
-            });
-            contentView = pdf;
-            root.addView(pdf, new FrameLayout.LayoutParams(-1, -1));
+        boolean isPdf = m.equals("application/pdf") || n.endsWith(".pdf");
+
+        if (isPdf) {
+            if (pdfContinuous) {
+                PdfContinuousList pdf = new PdfContinuousList(this, file, startPage, (page, total) -> {
+                    if (pageLabel != null) pageLabel.setText((page + 1) + " / " + total);
+                });
+                contentView = pdf;
+                root.addView(pdf, new FrameLayout.LayoutParams(-1, -1));
+            } else {
+                PdfZoomView pdf = new PdfZoomView(this, file, startPage, (page, total) -> {
+                    if (pageLabel != null) pageLabel.setText((page + 1) + " / " + total);
+                });
+                contentView = pdf;
+                root.addView(pdf, new FrameLayout.LayoutParams(-1, -1));
+            }
         } else if (m.startsWith("image/") || isImageName(n)) {
             ImageZoomView img = new ImageZoomView(this, file);
             contentView = img;
@@ -98,6 +111,19 @@ public class DocumentViewerActivity extends Activity {
         t.setGravity(Gravity.CENTER_VERTICAL);
         top.addView(t, new LinearLayout.LayoutParams(0, dp(48), 1));
 
+        if (isPdf) {
+            TextView mode = topButton(pdfContinuous ? "↕" : "⇄", 24);
+            mode.setContentDescription(pdfContinuous ? "Постраничный режим" : "Непрерывная прокрутка");
+            mode.setOnClickListener(v -> {
+                int page = currentPdfPage();
+                pdfContinuous = !pdfContinuous;
+                getSharedPreferences("viewer", MODE_PRIVATE).edit().putBoolean("pdf_continuous", pdfContinuous).apply();
+                buildViewer(page);
+                immersive();
+            });
+            top.addView(mode, new LinearLayout.LayoutParams(dp(52), dp(48)));
+        }
+
         TextView share = topButton("↗", 24);
         share.setContentDescription("Поделиться");
         share.setOnClickListener(v -> share());
@@ -117,11 +143,12 @@ public class DocumentViewerActivity extends Activity {
         pageBg.setCornerRadius(dp(18));
         pageLabel.setBackground(pageBg);
 
-        if (contentView instanceof PdfZoomView) {
+        if (contentView instanceof PdfZoomView || contentView instanceof PdfContinuousList) {
             FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, dp(38), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
             p.setMargins(0, 0, 0, dp(12));
             root.addView(pageLabel, p);
-            ((PdfZoomView)contentView).notifyPage();
+            if (contentView instanceof PdfZoomView) ((PdfZoomView)contentView).notifyPage();
+            else ((PdfContinuousList)contentView).notifyPage();
         }
 
         setContentView(root);
@@ -167,12 +194,20 @@ public class DocumentViewerActivity extends Activity {
         super.onConfigurationChanged(c);
         immersive();
         if (contentView instanceof PdfZoomView) ((PdfZoomView)contentView).rerender();
+        if (contentView instanceof PdfContinuousList) ((PdfContinuousList)contentView).invalidatePages();
         if (contentView instanceof ImageZoomView) ((ImageZoomView)contentView).resetForSize();
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
         if (contentView instanceof PdfZoomView) out.putInt("page", ((PdfZoomView)contentView).getPageIndex());
+        else if (contentView instanceof PdfContinuousList) out.putInt("page", ((PdfContinuousList)contentView).getPageIndex());
+    }
+
+    private int currentPdfPage() {
+        if (contentView instanceof PdfZoomView) return ((PdfZoomView)contentView).getPageIndex();
+        if (contentView instanceof PdfContinuousList) return ((PdfContinuousList)contentView).getPageIndex();
+        return 0;
     }
 
     private String readText(File f) {
@@ -353,6 +388,143 @@ public class DocumentViewerActivity extends Activity {
         @Override protected void onDetachedFromWindow() {
             super.onDetachedFromWindow();
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+            if (renderer != null) renderer.close();
+            if (pfd != null) try { pfd.close(); } catch(Exception ignored) {}
+        }
+    }
+
+    static class PdfContinuousList extends ListView {
+        private final ParcelFileDescriptor pfd;
+        private final PdfRenderer renderer;
+        private final PageListener listener;
+        private final PageAdapter adapter;
+        private int currentPage = 0;
+
+        PdfContinuousList(Context c, File file, int start, PageListener listener) {
+            super(c);
+            this.listener = listener;
+            setBackgroundColor(Color.rgb(26, 26, 26));
+            setDividerHeight(dpStatic(c, 10));
+            setPadding(dpStatic(c, 6), dpStatic(c, 72), dpStatic(c, 6), dpStatic(c, 56));
+            setClipToPadding(false);
+
+            ParcelFileDescriptor tempPfd = null;
+            PdfRenderer tempRenderer = null;
+            try {
+                tempPfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+                tempRenderer = new PdfRenderer(tempPfd);
+            } catch(Exception e) {
+                if (tempPfd != null) try { tempPfd.close(); } catch(Exception ignored) {}
+            }
+            pfd = tempPfd;
+            renderer = tempRenderer;
+            adapter = new PageAdapter(c);
+            setAdapter(adapter);
+
+            int count = renderer == null ? 0 : renderer.getPageCount();
+            currentPage = count == 0 ? 0 : Math.max(0, Math.min(start, count - 1));
+
+            setOnScrollListener(new AbsListView.OnScrollListener() {
+                @Override public void onScrollStateChanged(AbsListView view, int state) {}
+
+                @Override public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                    if (totalItemCount <= 0) return;
+                    currentPage = Math.max(0, Math.min(firstVisibleItem, totalItemCount - 1));
+                    notifyPage();
+                }
+            });
+
+            if (currentPage > 0) post(() -> setSelection(currentPage));
+        }
+
+        int getPageIndex() { return currentPage; }
+
+        void notifyPage() {
+            if (listener != null && renderer != null && renderer.getPageCount() > 0) {
+                listener.onPage(currentPage, renderer.getPageCount());
+            }
+        }
+
+        void invalidatePages() {
+            adapter.clearCache();
+            adapter.notifyDataSetChanged();
+            post(() -> setSelection(currentPage));
+        }
+
+        private static int dpStatic(Context c, float v) {
+            return Math.round(v * c.getResources().getDisplayMetrics().density);
+        }
+
+        class PageAdapter extends BaseAdapter {
+            private final Context context;
+            private final LruCache<Integer, Bitmap> cache;
+
+            PageAdapter(Context context) {
+                this.context = context;
+                int maxKb = (int)Math.min(48 * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L);
+                cache = new LruCache<Integer, Bitmap>(Math.max(8 * 1024, maxKb)) {
+                    @Override protected int sizeOf(Integer key, Bitmap value) {
+                        return value == null ? 0 : value.getByteCount() / 1024;
+                    }
+                };
+            }
+
+            @Override public int getCount() {
+                return renderer == null ? 0 : renderer.getPageCount();
+            }
+
+            @Override public Object getItem(int position) { return position; }
+            @Override public long getItemId(int position) { return position; }
+
+            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                ImageView image = convertView instanceof ImageView ? (ImageView)convertView : new ImageView(context);
+                image.setAdjustViewBounds(true);
+                image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                image.setBackgroundColor(Color.WHITE);
+                image.setPadding(0, 0, 0, 0);
+
+                Bitmap b = cache.get(position);
+                if (b == null || b.isRecycled()) {
+                    b = render(position);
+                    if (b != null) cache.put(position, b);
+                }
+                image.setImageBitmap(b);
+                return image;
+            }
+
+            private Bitmap render(int position) {
+                if (renderer == null || position < 0 || position >= renderer.getPageCount()) return null;
+                PdfRenderer.Page page = null;
+                try {
+                    page = renderer.openPage(position);
+                    int screenW = Math.max(720, getResources().getDisplayMetrics().widthPixels);
+                    int targetW = Math.min(1800, Math.max(screenW, screenW * 2));
+                    float ratio = (float)page.getHeight() / Math.max(1, page.getWidth());
+                    int targetH = Math.max(1, Math.round(targetW * ratio));
+                    if (targetH > 3200) {
+                        float k = 3200f / targetH;
+                        targetW = Math.max(1, Math.round(targetW * k));
+                        targetH = 3200;
+                    }
+                    Bitmap b = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565);
+                    b.eraseColor(Color.WHITE);
+                    page.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                    return b;
+                } catch(Exception e) {
+                    return null;
+                } finally {
+                    if (page != null) page.close();
+                }
+            }
+
+            void clearCache() {
+                cache.evictAll();
+            }
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            adapter.clearCache();
             if (renderer != null) renderer.close();
             if (pfd != null) try { pfd.close(); } catch(Exception ignored) {}
         }
