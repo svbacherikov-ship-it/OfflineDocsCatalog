@@ -19,6 +19,8 @@ public class OfficeViewerActivity extends Activity {
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private boolean ready;
     private boolean startedLoad;
+    private LinearLayout toolbar;
+    private final Runnable restoreToolbar=()->{if(toolbar!=null)toolbar.setBackgroundColor(Color.rgb(0,99,132));};
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
         title=getIntent().getStringExtra("title");
@@ -28,23 +30,25 @@ public class OfficeViewerActivity extends Activity {
         if(stored==null||stored.contains("/")||stored.contains("\\")||stored.equals("..")){finish();return;}
         File file=new File(new File(getFilesDir(),"docs"),stored);
         if(!file.isFile()){Toast.makeText(this,"Файл не найден",Toast.LENGTH_LONG).show();finish();return;}
-        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(Color.WHITE);
-        LinearLayout bar=new LinearLayout(this);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setBackgroundColor(Color.rgb(0,99,132));
+        FrameLayout root=new FrameLayout(this);root.setBackgroundColor(Color.WHITE);
+        LinearLayout bar=new LinearLayout(this);toolbar=bar;bar.setGravity(Gravity.CENTER_VERTICAL);bar.setBackgroundColor(Color.rgb(0,99,132));
         Button back=new Button(this);back.setText("‹");back.setContentDescription("Назад");back.setOnClickListener(v->finish());bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(52)));
-        TextView heading=new TextView(this);heading.setText(title);heading.setTextColor(Color.WHITE);heading.setSingleLine(true);heading.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);bar.addView(heading,new LinearLayout.LayoutParams(0,dp(48),1));heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView heading=new TextView(this);heading.setText(title);heading.setTextColor(Color.WHITE);heading.setShadowLayer(dp(2),0,dp(1),Color.BLACK);heading.setSingleLine(true);heading.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);bar.addView(heading,new LinearLayout.LayoutParams(0,dp(48),1));heading.setGravity(Gravity.CENTER_VERTICAL);
         pdf=new Button(this);pdf.setText("В PDF");pdf.setEnabled(false);pdf.setOnClickListener(v->printPdf());bar.addView(pdf,new LinearLayout.LayoutParams(dp(88),dp(52)));
         Button external=new Button(this);external.setText("⋮");external.setContentDescription("Открыть оригинал или поделиться");external.setOnClickListener(v->new AlertDialog.Builder(this).setItems(new String[]{"Открыть в другом приложении","Поделиться оригиналом"},(d,i)->external(i==1)).show());bar.addView(external,new LinearLayout.LayoutParams(dp(48),dp(52)));
-        root.addView(bar);
         web=new WebView(this);WebSettings settings=web.getSettings();
         settings.setJavaScriptEnabled(false);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setBlockNetworkLoads(true);settings.setDomStorageEnabled(false);settings.setBuiltInZoomControls(true);settings.setDisplayZoomControls(false);settings.setSupportZoom(true);settings.setUseWideViewPort(true);settings.setLoadWithOverviewMode(false);
         web.setWebViewClient(new WebViewClient(){
             @Override public boolean shouldOverrideUrlLoading(WebView v,String url){return true;}
             @Override public void onPageFinished(WebView v,String url){if(startedLoad){ready=true;pdf.setEnabled(true);}}
         });
-        root.addView(web,new LinearLayout.LayoutParams(-1,0,1));setContentView(root);
+        root.addView(web,new FrameLayout.LayoutParams(-1,-1));
+        root.addView(bar,new FrameLayout.LayoutParams(-1,dp(52),Gravity.TOP));
+        web.setOnScrollChangeListener((v,x,y,ox,oy)->{if(x!=ox||y!=oy)fadeToolbar();});
+        setContentView(root);
         worker.submit(()->{
             try{
-                String html=OfficePreview.read(file,title,mime);
+                String html=OfficePreview.read(file,title,mime).replace("</head>","<style>@media screen{body{padding-top:56px}}</style></head>");
                 runOnUiThread(()->{if(isFinishing()||isDestroyed())return;startedLoad=true;web.loadDataWithBaseURL(null,html,"text/html","UTF-8",null);});
             }catch(Exception|LinkageError|OutOfMemoryError ex){
                 android.util.Log.e("OfficeViewer","Preview failed",ex);
@@ -55,10 +59,10 @@ public class OfficeViewerActivity extends Activity {
     }
     private void external(boolean send){
         try{
-            Uri uri=Uri.parse("content://"+getPackageName()+".files/"+Uri.encode(stored));
+            Uri uri=LocalFileProvider.documentUri(this,stored,title);
             Intent i=new Intent(send?Intent.ACTION_SEND:Intent.ACTION_VIEW);
             String type=mime==null?"application/octet-stream":mime;
-            if(send){i.setType(type);i.putExtra(Intent.EXTRA_STREAM,uri);i.setClipData(ClipData.newRawUri("Документ",uri));}
+            if(send){i.setType(type);i.putExtra(Intent.EXTRA_STREAM,uri);i.setClipData(ClipData.newRawUri(title,uri));}
             else i.setDataAndType(uri,type);
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,send?"Поделиться":"Открыть оригинал"));
         }catch(Exception e){Toast.makeText(this,"Нет подходящего приложения",Toast.LENGTH_LONG).show();}
@@ -75,8 +79,9 @@ public class OfficeViewerActivity extends Activity {
             }catch(Exception e){Toast.makeText(this,"Не удалось открыть системный диалог печати",Toast.LENGTH_LONG).show();}
         }).setNegativeButton("Отмена",null).show();
     }
+    private void fadeToolbar(){if(toolbar==null)return;toolbar.setBackgroundColor(Color.argb(26,0,99,132));toolbar.removeCallbacks(restoreToolbar);toolbar.postDelayed(restoreToolbar,850);}
     private void immersive(){getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);}
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(focus)immersive();}
-    @Override protected void onDestroy(){worker.shutdownNow();if(web!=null){web.stopLoading();web.destroy();}super.onDestroy();}
+    @Override protected void onDestroy(){if(toolbar!=null)toolbar.removeCallbacks(restoreToolbar);worker.shutdownNow();if(web!=null){web.stopLoading();web.destroy();}super.onDestroy();}
     private int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
 }
