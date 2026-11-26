@@ -95,14 +95,14 @@ public final class OfficePreview {
     private static String column(int c){return CellReference.convertNumToColString(c);}
     private static void startTable(StringBuilder b,String name,int cols){b.append("<section><h2>").append(escape(name)).append("</h2><table><thead><tr><th>№</th>");for(int c=0;c<cols;c++)b.append("<th>").append(column(c)).append("</th>");b.append("</tr></thead><tbody>");}
     private static void row(StringBuilder b,int row,String[] values)throws IOException{b.append("<tr><th>").append(row).append("</th>");for(String v:values)b.append("<td>").append(escape(v)).append("</td>");b.append("</tr>");guard(b);}
-    private static String cellValue(Element e,List<String> ss,DataFormatter fmt,List<Integer> styles,Map<Integer,String> formats){
+    private static String cellValue(Element e,List<String> ss,DataFormatter fmt,List<Integer> styles,Map<Integer,String> formats,boolean use1904){
         String typ=e.getAttribute("t"), v=text(e,"v");
         if("inlineStr".equals(typ))return text(e,"t");
         if("s".equals(typ)){try{return ss.get(Integer.parseInt(v));}catch(Exception err){return "[не удалось прочитать строку]";}}
         if("b".equals(typ))return "1".equals(v)?"TRUE":"FALSE";
         if(e.getElementsByTagNameNS("*","f").getLength()>0&&v.isEmpty())return "[нет сохранённого результата формулы]";
         if((typ.isEmpty()||"n".equals(typ))&&!v.isEmpty()){
-            try{int style=e.hasAttribute("s")?Integer.parseInt(e.getAttribute("s")):0;int id=styles.get(style);String pattern=formats.get(id);if(pattern==null)pattern=BuiltinFormats.getBuiltinFormat(id);if(pattern!=null)return fmt.formatRawCellContents(Double.parseDouble(v),id,pattern);}catch(Exception ignored){}
+            try{int style=e.hasAttribute("s")?Integer.parseInt(e.getAttribute("s")):0;int id=styles.get(style);String pattern=formats.get(id);if(pattern==null)pattern=BuiltinFormats.getBuiltinFormat(id);if(pattern!=null)return fmt.formatRawCellContents(Double.parseDouble(v),id,pattern,use1904);}catch(Exception ignored){}
         }
         return v;
     }
@@ -113,6 +113,7 @@ public final class OfficePreview {
         Document st=xml(z,"xl/styles.xml",false);if(st!=null){NodeList l=st.getElementsByTagNameNS("*","numFmt");for(int i=0;i<l.getLength();i++){Element e=(Element)l.item(i);formats.put(Integer.parseInt(e.getAttribute("numFmtId")),e.getAttribute("formatCode"));}NodeList x=st.getElementsByTagNameNS("*","cellXfs");if(x.getLength()>0)for(Element e:children(x.item(0),"xf"))styles.add(Integer.parseInt(e.getAttribute("numFmtId")));}
         DataFormatter fmt=new DataFormatter(Locale.getDefault());
         Document workbook=xml(z,"xl/workbook.xml",true), rel=xml(z,"xl/_rels/workbook.xml.rels",true);
+        NodeList props=workbook.getElementsByTagNameNS("*","workbookPr");boolean use1904=false;if(props.getLength()>0){String val=((Element)props.item(0)).getAttribute("date1904");use1904="1".equals(val)||"true".equals(val);}
         Map<String,String> targets=new HashMap<>();NodeList rr=rel.getElementsByTagNameNS("*","Relationship");
         for(int i=0;i<rr.getLength();i++){Element e=(Element)rr.item(i);if(!"External".equals(e.getAttribute("TargetMode"))&&e.getAttribute("Type").endsWith("/worksheet"))targets.put(e.getAttribute("Id"),e.getAttribute("Target"));}
         NodeList sheets=workbook.getElementsByTagNameNS("*","sheet");int count=0;
@@ -125,14 +126,14 @@ public final class OfficePreview {
             for(int i=0;i<rows.getLength();i++){int next=0;for(Element e:children(rows.item(i),"c")){int c=col(e.getAttribute("r"));if(c<0)c=next;next=c+1;cols=Math.max(cols,next);}}
             if(cols>MAX_COLS||(long)cols*rows.getLength()+count>MAX_CELLS)throw new IOException("Таблица слишком велика для просмотра");
             count+=cols*rows.getLength();startTable(b,sh.getAttribute("name"),cols);
-            for(int i=0;i<rows.getLength();i++){Element re=(Element)rows.item(i);int number=i+1;try{number=Integer.parseInt(re.getAttribute("r"));}catch(Exception ignored){}String[] vals=new String[cols];int next=0;for(Element e:children(re,"c")){int c=col(e.getAttribute("r"));if(c<0)c=next;next=c+1;vals[c]=cellValue(e,ss,fmt,styles,formats);}row(b,number,vals);}
+            for(int i=0;i<rows.getLength();i++){Element re=(Element)rows.item(i);int number=i+1;try{number=Integer.parseInt(re.getAttribute("r"));}catch(Exception ignored){}String[] vals=new String[cols];int next=0;for(Element e:children(re,"c")){int c=col(e.getAttribute("r"));if(c<0)c=next;next=c+1;vals[c]=cellValue(e,ss,fmt,styles,formats,use1904);}row(b,number,vals);}
             b.append("</tbody></table></section>");
         }
     }
     private static void xls(StringBuilder b,HSSFWorkbook wb)throws Exception{
-        DataFormatter fmt=new DataFormatter(Locale.getDefault());int total=0;if(wb.getNumberOfSheets()>100)throw new IOException("Более 100 листов");
+        DataFormatter fmt=new DataFormatter(Locale.getDefault());fmt.setUseCachedValuesForFormulaCells(true);int total=0;if(wb.getNumberOfSheets()>100)throw new IOException("Более 100 листов");
         for(Sheet sheet:wb){int cols=1, rows=0;for(Row r:sheet){cols=Math.max(cols,r.getLastCellNum());rows++;}if(cols>MAX_COLS||rows>MAX_ROWS||(long)cols*rows+total>MAX_CELLS)throw new IOException("Таблица слишком велика для просмотра");total+=cols*rows;startTable(b,sheet.getSheetName(),cols);
-            for(Row r:sheet){String[] vals=new String[cols];for(Cell c:r){String v;if(c.getCellType()==CellType.FORMULA){switch(c.getCachedFormulaResultType()){case NUMERIC:v=fmt.formatRawCellContents(c.getNumericCellValue(),c.getCellStyle().getDataFormat(),c.getCellStyle().getDataFormatString());break;case STRING:v=c.getStringCellValue();break;case BOOLEAN:v=String.valueOf(c.getBooleanCellValue());break;case ERROR:v=FormulaError.forInt(c.getErrorCellValue()).getString();break;default:v="";}}else v=fmt.formatCellValue(c);vals[c.getColumnIndex()]=v;}row(b,r.getRowNum()+1,vals);}
+            for(Row r:sheet){String[] vals=new String[cols];for(Cell c:r){String v=fmt.formatCellValue(c);vals[c.getColumnIndex()]=v;}row(b,r.getRowNum()+1,vals);}
             b.append("</tbody></table></section>");
         }
     }
