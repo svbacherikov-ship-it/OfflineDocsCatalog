@@ -274,9 +274,12 @@ public class MainActivity extends Activity {
         card.setPadding(dp(14), dp(12), dp(12), dp(12));
         card.setBackground(rounded(surface(), 18));
 
-        TextView badge = label("▣", 24, accent(), false);
-        badge.setGravity(Gravity.CENTER);
-        card.addView(badge, new LinearLayout.LayoutParams(dp(42), dp(48)));
+        ImageView badge = new ImageView(this);
+        badge.setImageResource(R.drawable.ic_folder_linux);
+        badge.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        badge.setPadding(dp(2),dp(4),dp(8),dp(4));
+        badge.setContentDescription("Папка");
+        card.addView(badge, new LinearLayout.LayoutParams(dp(58), dp(48)));
 
         LinearLayout tx = column();
         TextView title = label(name, 17, text(), true);
@@ -535,7 +538,7 @@ public class MainActivity extends Activity {
         }
 
         try {
-            Uri uri = Uri.parse("content://" + getPackageName() + ".files/" + Uri.encode(d.optString("stored")));
+            Uri uri = LocalFileProvider.documentUri(this,d.optString("stored"),d.optString("title"));
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(uri, mime);
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -549,10 +552,11 @@ public class MainActivity extends Activity {
     }
 
     private void shareDoc(JSONObject d) {
-        Uri uri = Uri.parse("content://" + getPackageName() + ".files/" + Uri.encode(d.optString("stored")));
+        Uri uri = LocalFileProvider.documentUri(this,d.optString("stored"),d.optString("title"));
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType(d.optString("mime", mimeFromName(d.optString("title"))));
         i.putExtra(Intent.EXTRA_STREAM, uri);
+        i.setClipData(ClipData.newRawUri(d.optString("title"),uri));
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         startActivity(Intent.createChooser(i, "Поделиться файлом"));
     }
