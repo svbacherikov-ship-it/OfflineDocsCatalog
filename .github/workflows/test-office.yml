@@ -21,7 +21,7 @@ jobs:
         run: gradle --no-daemon assembleDebug
       - name: Create demonstration files
         run: |
-          python3 -m pip install --break-system-packages python-docx openpyxl xlwt
+          python3 -m pip install --break-system-packages python-docx openpyxl xlwt reportlab
           mkdir -p fixtures screenshots
           python3 - <<'PY'
           from docx import Document
@@ -60,7 +60,7 @@ jobs:
       - name: Run Android smoke checks and capture real screens
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 34
           arch: x86_64
           target: google_apis
           profile: pixel_6
@@ -74,7 +74,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OfflineDocsCatalog-v1.2.1-RuStore-screens
+          name: OfflineDocsCatalog-v1.2.1-phone-tablet
           path: screenshots/
           if-no-files-found: warn
           retention-days: 30
