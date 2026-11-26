@@ -17,7 +17,7 @@ android {
   }
   defaultConfig {
     applicationId 'ru.amafor.offlinedocs.stable'
-    minSdk 24
+    minSdk 26
     targetSdk 35
     versionCode 10
     versionName '1.2.0'
