@@ -26,6 +26,7 @@ public class DocumentViewerActivity extends Activity {
     private boolean pdfContinuous;
     private LinearLayout topPanel;
     private TextView zoomLabel;
+    private boolean panelTransparent;
     private final Runnable restorePanel=()->setPanelTransparency(false);
 
     public static boolean supports(String title, String mime) {
@@ -54,7 +55,7 @@ public class DocumentViewerActivity extends Activity {
 
     private void buildViewer(int startPage) {
         if(topPanel!=null)topPanel.removeCallbacks(restorePanel);
-        topPanel=null;pageLabel=null;zoomLabel=null;
+        topPanel=null;pageLabel=null;zoomLabel=null;panelTransparent=false;
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
@@ -77,11 +78,13 @@ public class DocumentViewerActivity extends Activity {
                     if (pageLabel != null) pageLabel.setText((page + 1) + " / " + total);
                 });
                 contentView = pdf;
+                pdf.setOnTouchListener((v,e)->{if(e.getActionMasked()==MotionEvent.ACTION_MOVE)fadePanel();return false;});
                 root.addView(pdf, new FrameLayout.LayoutParams(-1, -1));
             }
         } else if (m.startsWith("image/") || isImageName(n)) {
             ImageZoomView img = new ImageZoomView(this, file);
             contentView = img;
+            img.setOnTouchListener((v,e)->{if(e.getActionMasked()==MotionEvent.ACTION_MOVE)fadePanel();return false;});
             root.addView(img, new FrameLayout.LayoutParams(-1, -1));
         } else {
             ScrollView sc = new ScrollView(this);
@@ -177,7 +180,7 @@ public class DocumentViewerActivity extends Activity {
                 zoomLabel=topButton(Math.round(list.zoom*100)+"%",13);zoomLabel.setContentDescription("Сбросить масштаб");zoomLabel.setOnClickListener(v->list.changeZoom(1f,list.getWidth()/2f,list.getHeight()/2f));controls.addView(zoomLabel,new LinearLayout.LayoutParams(dp(58),dp(40)));
                 TextView plus=topButton("+",23);plus.setContentDescription("Увеличить масштаб");plus.setOnClickListener(v->list.changeZoom(list.zoom*1.25f,list.getWidth()/2f,list.getHeight()/2f));controls.addView(plus,new LinearLayout.LayoutParams(dp(42),dp(40)));
                 pageLabel.setBackgroundColor(Color.TRANSPARENT);controls.addView(pageLabel,new LinearLayout.LayoutParams(-2,dp(40)));
-                root.addView(controls,p);list.notifyPage();
+                p.height=dp(42);root.addView(controls,p);list.notifyPage();
             }
         }
 
@@ -205,10 +208,9 @@ public class DocumentViewerActivity extends Activity {
     }
 
     private void setPanelTransparency(boolean transparent){
-        if(topPanel==null)return;
-        GradientDrawable bg=new GradientDrawable();
-        bg.setColor(Color.argb(transparent?22:185,15,18,20));
-        bg.setCornerRadius(dp(14));topPanel.setBackground(bg);
+        if(topPanel==null||panelTransparent==transparent)return;
+        panelTransparent=transparent;
+        if(topPanel.getBackground() instanceof GradientDrawable)((GradientDrawable)topPanel.getBackground()).setColor(Color.argb(transparent?22:185,15,18,20));
     }
     private void fadePanel(){
         if(topPanel==null)return;
@@ -448,7 +450,7 @@ public class DocumentViewerActivity extends Activity {
         private final PageAdapter adapter;
         private final ScaleGestureDetector scaler;
         private final int slop;
-        private int currentPage,scrollState=SCROLL_STATE_IDLE;
+        private int currentPage,scrollState=AbsListView.OnScrollListener.SCROLL_STATE_IDLE;
         private boolean pinching,horizontal,closed;
         private float startX,startY,lastX,pendingZoom,focusX,focusY;
         float zoom=1f, pan=0f;
@@ -469,11 +471,11 @@ public class DocumentViewerActivity extends Activity {
             adapter=new PageAdapter(c);setAdapter(adapter);
             int count=adapter.getCount();currentPage=count==0?0:Math.max(0,Math.min(start,count-1));
             setOnScrollListener(new AbsListView.OnScrollListener(){
-                @Override public void onScrollStateChanged(AbsListView v,int state){scrollState=state;if(state!=SCROLL_STATE_IDLE)movement();}
+                @Override public void onScrollStateChanged(AbsListView v,int state){scrollState=state;if(state!=AbsListView.OnScrollListener.SCROLL_STATE_IDLE)movement();}
                 @Override public void onScroll(AbsListView v,int first,int visible,int total){
                     if(total<=0||closed)return;
                     currentPage=Math.max(0,Math.min(first,total-1));
-                    notifyPage();if(scrollState!=SCROLL_STATE_IDLE)movement();
+                    notifyPage();if(scrollState!=AbsListView.OnScrollListener.SCROLL_STATE_IDLE)movement();
                 }
             });
             final int initialPage=currentPage;
@@ -562,9 +564,12 @@ public class DocumentViewerActivity extends Activity {
             PageTile(Context c){super(c);}
             void bind(int i,Bitmap b){
                 index=i;bitmap=b;
-                float ratio=b==null?1.414f:(float)b.getHeight()/b.getWidth();
-                int height=Math.max(1,Math.round(contentWidth()*zoom*ratio));
-                setLayoutParams(new AbsListView.LayoutParams(-1,height));invalidate();
+                setLayoutParams(new AbsListView.LayoutParams(-1,-2));requestLayout();invalidate();
+            }
+            @Override protected void onMeasure(int ws,int hs){
+                int width=MeasureSpec.getSize(ws);
+                float ratio=bitmap==null?1.414f:(float)bitmap.getHeight()/bitmap.getWidth();
+                setMeasuredDimension(Math.max(1,width),Math.max(1,Math.round(width*zoom*ratio)));
             }
             @Override protected void onDraw(Canvas c){
                 super.onDraw(c);c.drawColor(Color.WHITE);
@@ -613,7 +618,7 @@ public class DocumentViewerActivity extends Activity {
         }
         @Override protected void onSizeChanged(int w,int h,int ow,int oh){
             super.onSizeChanged(w,h,ow,oh);
-            if(w>0&&w!=ow){clampPan();if(adapter!=null)adapter.notifyDataSetChanged();}
+            if(w>0&&w!=ow){clampPan();if(adapter!=null)post(()->{if(!closed)adapter.notifyDataSetChanged();});}
         }
         @Override protected void onDetachedFromWindow(){
             super.onDetachedFromWindow();
