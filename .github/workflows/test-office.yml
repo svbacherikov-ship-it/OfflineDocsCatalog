@@ -1,0 +1,125 @@
+name: Office Android smoke test and store screenshots
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/test-office.yml']
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug for emulator
+        run: gradle --no-daemon assembleDebug
+      - name: Create demonstration files
+        run: |
+          python3 -m pip install --break-system-packages python-docx openpyxl xlwt
+          mkdir -p fixtures screenshots
+          python3 - <<'PY'
+          from docx import Document
+          from openpyxl import Workbook
+          from xlwt import Workbook as OldWorkbook
+          import json, xml.etree.ElementTree as ET
+          doc=Document()
+          doc.add_heading('Контрольный пример', 0)
+          doc.add_paragraph('Проверка отображения русского текста и таблиц. Документ демонстрационный.')
+          t=doc.add_table(rows=2, cols=2)
+          t.cell(0,0).text='Операция';t.cell(0,1).text='Статус'
+          t.cell(1,0).text='Проверка документа';t.cell(1,1).text='Выполнено'
+          doc.save('fixtures/demo.docx')
+          wb=Workbook(); ws=wb.active; ws.title='План работ'
+          ws.append(['Работа','Кол-во','Статус'])
+          ws.append(['Осмотр',4,'Готово']); ws.append(['Проверка',12,'В работе'])
+          wb.save('fixtures/demo.xlsx')
+          old=OldWorkbook(); sh=old.add_sheet('Проверка');sh.write(0,0,'Тест XLS');sh.write(0,1,123)
+          old.save('fixtures/demo.xls')
+          docs=[]
+          formats=[('demo.docx','Пример Word.docx','application/vnd.openxmlformats-officedocument.wordprocessingml.document'),('demo.xlsx','Пример Excel.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),('demo.xls','Старый Excel.xls','application/vnd.ms-excel'),('demo.doc','Старый Word.doc','application/msword')]
+          for n,(stored,title,mime) in enumerate(formats):
+              docs.append(dict(id='demo'+str(n),stored=stored,title=title,mime=mime,section='instructions',folderId=None,note='Демонстрационный файл'))
+          root=ET.Element('map')
+          ET.SubElement(root,'string',name='docs').text=json.dumps(docs,ensure_ascii=False)
+          ET.SubElement(root,'string',name='folders').text='[]'
+          ET.SubElement(root,'int',name='theme',value='1')
+          ET.ElementTree(root).write('fixtures/catalog.xml',encoding='utf-8',xml_declaration=True)
+          PY
+          curl --fail --location --retry 2 -o fixtures/demo.doc https://raw.githubusercontent.com/apache/poi/trunk/test-data/document/47950_normal.doc
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run Android smoke checks and capture real screens
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            adb install app/build/outputs/apk/debug/app-debug.apk
+            adb shell wm size 1080x1920
+            adb shell wm density 420
+            adb shell settings put system accelerometer_rotation 0
+            adb shell settings put system user_rotation 0
+            adb shell am force-stop ru.amafor.offlinedocs.stable
+            adb shell run-as ru.amafor.offlinedocs.stable mkdir -p files/docs shared_prefs
+            for f in demo.docx demo.xlsx demo.xls demo.doc; do adb shell -T "run-as ru.amafor.offlinedocs.stable sh -c 'cat > files/docs/$f'" < "fixtures/$f"; done
+            adb shell -T "run-as ru.amafor.offlinedocs.stable sh -c 'cat > shared_prefs/catalog.xml'" < fixtures/catalog.xml
+            adb shell am start -n ru.amafor.offlinedocs.stable/ru.amafor.offlinedocs.MainActivity
+            python3 - <<'PY'
+            import subprocess, time, re, xml.etree.ElementTree as ET, pathlib
+            def adb(*args):
+                return subprocess.check_output(['adb',*args],stderr=subprocess.STDOUT)
+            def nodes():
+                adb('shell','uiautomator','dump','/sdcard/office.xml')
+                return ET.fromstring(adb('shell','cat','/sdcard/office.xml').decode()).iter('node')
+            def find(text, timeout=30, enabled=False):
+                end=time.time()+timeout
+                while time.time()<end:
+                    try:
+                        for node in nodes():
+                            if text==node.get('text') and (not enabled or node.get('enabled')=='true'):
+                                return node
+                    except Exception: pass
+                    time.sleep(1)
+                raise RuntimeError('UI text not found: '+text)
+            def tap(text):
+                a=list(map(int,re.findall(r'\d+',find(text).get('bounds'))))
+                adb('shell','input','tap',str((a[0]+a[2])//2),str((a[1]+a[3])//2))
+                time.sleep(1)
+            def shot(name):
+                time.sleep(2)
+                pathlib.Path('screenshots/'+name+'.png').write_bytes(adb('exec-out','screencap','-p'))
+            find('Инструкции');shot('01_home');tap('Инструкции')
+            find('Пример Word.docx');shot('02_catalog')
+            for title,screenshot,expected in [('Пример Word.docx','03_word','Контрольный пример'),('Пример Excel.xlsx','04_excel','План работ'),('Старый Excel.xls',None,'Тест XLS'),('Старый Word.doc',None,None)]:
+                tap(title);find('В PDF',timeout=40,enabled=True)
+                if expected: find(expected,timeout=20)
+                if screenshot: shot(screenshot)
+                print('VIEW PASS',title,flush=True)
+                adb('shell','input','keyevent','4');find(title)
+            tap('Пример Word.docx');find('В PDF',enabled=True);tap('В PDF');find('Сохранение в PDF');shot('05_export')
+            print('PDF confirmation displayed; output file not tested',flush=True)
+            PY
+      - name: Capture logs
+        if: always()
+        run: ls -la screenshots || true
+      - name: Upload real screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineDocsCatalog-RuStore-screens
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 30
