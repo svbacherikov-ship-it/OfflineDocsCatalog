@@ -6,6 +6,8 @@ import java.util.zip.*;
 import javax.xml.parsers.*;
 import org.w3c.dom.*;
 import org.xml.sax.SAXException;
+import org.xml.sax.InputSource;
+import java.nio.charset.StandardCharsets;
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.extractor.WordExtractor;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
@@ -55,22 +57,30 @@ public final class OfficePreview {
         ByteArrayOutputStream out=new ByteArrayOutputStream();
         try(InputStream in=z.getInputStream(e)){byte[] buf=new byte[8192];int r;while((r=in.read(buf))!=-1){if(out.size()+r>XML_LIMIT)throw new IOException("Слишком большой XML");out.write(buf,0,r);}}
         DocumentBuilderFactory fac=DocumentBuilderFactory.newInstance();fac.setNamespaceAware(true);
-        fac.setFeature("http://xml.org/sax/features/external-general-entities",false);
-        fac.setFeature("http://xml.org/sax/features/external-parameter-entities",false);
+        byte[] raw=out.toByteArray();
+        String source;
+        if(raw.length>=2&&((raw[0]&255)==255&&(raw[1]&255)==254||(raw[0]&255)==254&&(raw[1]&255)==255))source=new String(raw,StandardCharsets.UTF_16);
+        else if(raw.length>=2&&raw[0]==0&&raw[1]==60)source=new String(raw,StandardCharsets.UTF_16BE);
+        else if(raw.length>=2&&raw[0]==60&&raw[1]==0)source=new String(raw,StandardCharsets.UTF_16LE);
+        else source=new String(raw,StandardCharsets.UTF_8);
+        if(source.startsWith("\uFEFF"))source=source.substring(1);
+        if(source.indexOf(0)>=0||source.contains("<!DOCTYPE")||source.contains("<!ENTITY"))throw new IOException("Недопустимый XML");
         fac.setExpandEntityReferences(false);
         DocumentBuilder builder=fac.newDocumentBuilder();
         builder.setEntityResolver((pub,sys)->{throw new SAXException("Внешние XML-сущности запрещены");});
-        Document doc=builder.parse(new ByteArrayInputStream(out.toByteArray()));
+        Document doc=builder.parse(new InputSource(new StringReader(source)));
         if(doc.getDoctype()!=null)throw new IOException("DTD запрещён");
         return doc;
     }
     private static String tag(Node n){return n.getLocalName()==null?n.getNodeName():n.getLocalName();}
     private static List<Element> children(Node n,String type){List<Element> out=new ArrayList<>();for(Node c=n.getFirstChild();c!=null;c=c.getNextSibling())if(c instanceof Element&&(type==null||tag(c).equals(type)))out.add((Element)c);return out;}
     private static String text(Element e,String name){NodeList l=e.getElementsByTagNameNS("*",name);StringBuilder b=new StringBuilder();for(int i=0;i<l.getLength();i++)b.append(l.item(i).getTextContent());return b.toString();}
-    private static void wordBody(StringBuilder b,Node n)throws IOException{
+    private static void wordBody(StringBuilder b,Node n)throws IOException{wordBody(b,n,0);}
+    private static void wordBody(StringBuilder b,Node n,int depth)throws IOException{
+        if(depth>32)throw new IOException("Слишком глубокая вложенность таблиц");
         for(Element e:children(n,null)){
             if(tag(e).equals("p")){b.append("<p>");for(Element run:children(e,null)){if(tag(run).equals("r")||tag(run).equals("hyperlink"))wordRun(b,run);}b.append("</p>");}
-            else if(tag(e).equals("tbl")){b.append("<table>");for(Element row:children(e,"tr")){b.append("<tr>");for(Element cell:children(row,"tc")){b.append("<td>");wordBody(b,cell);b.append("</td>");}b.append("</tr>");}b.append("</table>");}
+            else if(tag(e).equals("tbl")){b.append("<table>");for(Element row:children(e,"tr")){b.append("<tr>");for(Element cell:children(row,"tc")){b.append("<td>");wordBody(b,cell,depth+1);b.append("</td>");}b.append("</tr>");}b.append("</table>");}
             guard(b);
         }
     }
@@ -106,6 +116,7 @@ public final class OfficePreview {
         Map<String,String> targets=new HashMap<>();NodeList rr=rel.getElementsByTagNameNS("*","Relationship");
         for(int i=0;i<rr.getLength();i++){Element e=(Element)rr.item(i);if(!"External".equals(e.getAttribute("TargetMode"))&&e.getAttribute("Type").endsWith("/worksheet"))targets.put(e.getAttribute("Id"),e.getAttribute("Target"));}
         NodeList sheets=workbook.getElementsByTagNameNS("*","sheet");int count=0;
+        if(sheets.getLength()>100)throw new IOException("Более 100 листов");
         for(int s=0;s<sheets.getLength();s++){
             Element sh=(Element)sheets.item(s);String rid=sh.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships","id");if(rid.isEmpty())rid=sh.getAttribute("r:id");String target=targets.get(rid);if(target==null)throw new IOException("Неподдерживаемый тип листа");
             String path=target.startsWith("/")?target.substring(1):"xl/"+target;if(!path.startsWith("xl/")||path.contains("..")||path.contains(":"))throw new IOException("Недопустимый путь листа");
@@ -119,7 +130,7 @@ public final class OfficePreview {
         }
     }
     private static void xls(StringBuilder b,HSSFWorkbook wb)throws Exception{
-        DataFormatter fmt=new DataFormatter(Locale.getDefault());int total=0;
+        DataFormatter fmt=new DataFormatter(Locale.getDefault());int total=0;if(wb.getNumberOfSheets()>100)throw new IOException("Более 100 листов");
         for(Sheet sheet:wb){int cols=1, rows=0;for(Row r:sheet){cols=Math.max(cols,r.getLastCellNum());rows++;}if(cols>MAX_COLS||rows>MAX_ROWS||(long)cols*rows+total>MAX_CELLS)throw new IOException("Таблица слишком велика для просмотра");total+=cols*rows;startTable(b,sheet.getSheetName(),cols);
             for(Row r:sheet){String[] vals=new String[cols];for(Cell c:r){String v;if(c.getCellType()==CellType.FORMULA){switch(c.getCachedFormulaResultType()){case NUMERIC:v=fmt.formatRawCellContents(c.getNumericCellValue(),c.getCellStyle().getDataFormat(),c.getCellStyle().getDataFormatString());break;case STRING:v=c.getStringCellValue();break;case BOOLEAN:v=String.valueOf(c.getBooleanCellValue());break;case ERROR:v=FormulaError.forInt(c.getErrorCellValue()).getString();break;default:v="";}}else v=fmt.formatCellValue(c);vals[c.getColumnIndex()]=v;}row(b,r.getRowNum()+1,vals);}
             b.append("</tbody></table></section>");
