@@ -32,10 +32,10 @@ public class OfficeViewerActivity extends Activity {
         if(!file.isFile()){Toast.makeText(this,"Файл не найден",Toast.LENGTH_LONG).show();finish();return;}
         FrameLayout root=new FrameLayout(this);root.setBackgroundColor(Color.WHITE);
         LinearLayout bar=new LinearLayout(this);toolbar=bar;bar.setGravity(Gravity.CENTER_VERTICAL);bar.setBackgroundColor(Color.rgb(0,99,132));
-        Button back=new Button(this);back.setText("‹");back.setContentDescription("Назад");back.setOnClickListener(v->finish());bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(52)));
+        Button back=new Button(this);back.setText("‹");styleButton(back);back.setContentDescription("Назад");back.setOnClickListener(v->finish());bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(52)));
         TextView heading=new TextView(this);heading.setText(title);heading.setTextColor(Color.WHITE);heading.setShadowLayer(dp(2),0,dp(1),Color.BLACK);heading.setSingleLine(true);heading.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);bar.addView(heading,new LinearLayout.LayoutParams(0,dp(48),1));heading.setGravity(Gravity.CENTER_VERTICAL);
-        pdf=new Button(this);pdf.setText("В PDF");pdf.setEnabled(false);pdf.setOnClickListener(v->printPdf());bar.addView(pdf,new LinearLayout.LayoutParams(dp(88),dp(52)));
-        Button external=new Button(this);external.setText("⋮");external.setContentDescription("Открыть оригинал или поделиться");external.setOnClickListener(v->new AlertDialog.Builder(this).setItems(new String[]{"Открыть в другом приложении","Поделиться оригиналом"},(d,i)->external(i==1)).show());bar.addView(external,new LinearLayout.LayoutParams(dp(48),dp(52)));
+        pdf=new Button(this);pdf.setText("В PDF");styleButton(pdf);pdf.setEnabled(false);pdf.setOnClickListener(v->printPdf());bar.addView(pdf,new LinearLayout.LayoutParams(dp(88),dp(52)));
+        Button external=new Button(this);external.setText("⋮");styleButton(external);external.setContentDescription("Открыть оригинал или поделиться");external.setOnClickListener(v->new AlertDialog.Builder(this).setItems(new String[]{"Открыть в другом приложении","Поделиться оригиналом"},(d,i)->external(i==1)).show());bar.addView(external,new LinearLayout.LayoutParams(dp(48),dp(52)));
         web=new WebView(this);WebSettings settings=web.getSettings();
         settings.setJavaScriptEnabled(false);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setBlockNetworkLoads(true);settings.setDomStorageEnabled(false);settings.setBuiltInZoomControls(true);settings.setDisplayZoomControls(false);settings.setSupportZoom(true);settings.setUseWideViewPort(true);settings.setLoadWithOverviewMode(false);
         web.setWebViewClient(new WebViewClient(){
@@ -79,6 +79,7 @@ public class OfficeViewerActivity extends Activity {
             }catch(Exception e){Toast.makeText(this,"Не удалось открыть системный диалог печати",Toast.LENGTH_LONG).show();}
         }).setNegativeButton("Отмена",null).show();
     }
+    private void styleButton(Button b){b.setTextColor(Color.WHITE);b.setBackgroundColor(Color.TRANSPARENT);b.setShadowLayer(dp(2),0,dp(1),Color.BLACK);b.setMinWidth(0);b.setMinimumWidth(0);b.setPadding(dp(4),0,dp(4),0);}
     private void fadeToolbar(){if(toolbar==null)return;toolbar.setBackgroundColor(Color.argb(26,0,99,132));toolbar.removeCallbacks(restoreToolbar);toolbar.postDelayed(restoreToolbar,850);}
     private void immersive(){getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);}
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(focus)immersive();}
