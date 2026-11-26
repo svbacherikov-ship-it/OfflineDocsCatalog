@@ -517,6 +517,14 @@ public class MainActivity extends Activity {
     private void openDoc(JSONObject d) {
         String title = d.optString("title");
         String mime = d.optString("mime", mimeFromName(title));
+        if (OfficePreview.supports(d.optString("stored"), mime) || OfficePreview.supports(title, mime)) {
+            Intent i = new Intent(this, OfficeViewerActivity.class);
+            i.putExtra("stored", d.optString("stored"));
+            i.putExtra("title", title);
+            i.putExtra("mime", mime);
+            startActivity(i);
+            return;
+        }
         if (DocumentViewerActivity.supports(title, mime)) {
             Intent i = new Intent(this, DocumentViewerActivity.class);
             i.putExtra("stored", d.optString("stored"));
@@ -535,7 +543,7 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             new AlertDialog.Builder(this)
                 .setTitle("Формат пока не поддерживается")
-                .setMessage("Встроенный просмотр доступен для PDF, изображений и текстовых файлов. Для этого формата не найдено внешнее приложение.")
+                .setMessage("Встроенный просмотр доступен для PDF, Word, Excel, изображений и текстовых файлов. Для этого формата не найдено внешнее приложение.")
                 .setPositiveButton("OK", null).show();
         }
     }
