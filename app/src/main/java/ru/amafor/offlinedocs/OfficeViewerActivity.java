@@ -42,7 +42,6 @@ public class OfficeViewerActivity extends Activity {
             @Override public void onPageFinished(WebView v,String url){if(startedLoad){ready=true;pdf.setEnabled(true);}}
         });
         root.addView(web,new LinearLayout.LayoutParams(-1,0,1));setContentView(root);
-        web.loadDataWithBaseURL(null,"<html><meta charset='utf-8'><body>Подготовка документа…</body></html>","text/html","UTF-8",null);
         worker.submit(()->{
             try{
                 String html=OfficePreview.read(file,title,mime);
@@ -70,7 +69,8 @@ public class OfficeViewerActivity extends Activity {
             try{
                 PrintManager pm=(PrintManager)getSystemService(PRINT_SERVICE);
                 String name=title.replaceFirst("\\.[^.]+$","");
-                PrintAttributes attrs=new PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).setColorMode(PrintAttributes.COLOR_MODE_COLOR).build();
+                boolean excel=stored.toLowerCase(java.util.Locale.ROOT).endsWith(".xls")||stored.toLowerCase(java.util.Locale.ROOT).endsWith(".xlsx");
+                PrintAttributes attrs=new PrintAttributes.Builder().setMediaSize(excel?PrintAttributes.MediaSize.ISO_A4.asLandscape():PrintAttributes.MediaSize.ISO_A4.asPortrait()).setColorMode(PrintAttributes.COLOR_MODE_COLOR).build();
                 pm.print(name,web.createPrintDocumentAdapter(name),attrs);
             }catch(Exception e){Toast.makeText(this,"Не удалось открыть системный диалог печати",Toast.LENGTH_LONG).show();}
         }).setNegativeButton("Отмена",null).show();
